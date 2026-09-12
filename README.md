@@ -8,7 +8,7 @@ model and an embedding model, and configures local retrieval-augmented generatio
 | Component | Role | Default |
 | --- | --- | --- |
 | Ollama | Runs chat and embedding models locally | localhost:11434 |
-| Chat model | Generates answers | `gemma4:12b` |
+| Chat model | Generates answers | `qwen3:1.7b` |
 | Embedding model | Converts document chunks and questions into vectors for retrieval | `nomic-embed-text` |
 | Open WebUI | Chat interface, document ingestion, knowledge collections and retrieval | localhost:8080 |
 
@@ -20,10 +20,11 @@ provisioning a separate vector database service.
 
 ## Install
 
-Supported systems: Ubuntu/Xubuntu 22.04 and 24.04 with systemd, sudo, and an
-installed Python 3.11 or 3.12 with matching venv support. Downloading packages and
-models requires internet access. Available RAM, disk space and GPU capacity must
-accommodate both models; inference speed depends on your hardware.
+Supported systems: Ubuntu/Xubuntu 22.04 and 24.04 with systemd and sudo. The
+installer uses system Python 3.11/3.12 when available. On Ubuntu 22.04 it
+provisions a local Python 3.11 through `uv` without replacing system Python.
+Downloading packages and models requires internet access. Available RAM, disk
+space and GPU capacity must accommodate both models.
 
 On Ubuntu 24.04, from the repository checkout:
 
@@ -34,17 +35,26 @@ sudo apt-get install -y python3 python3-venv
 ./scripts/install-local-llm.sh
 ```
 
-On Ubuntu 22.04, first install a supported Python independently of the system
-interpreter, then select it with `PYTHON_BIN=python3.11`. See the
-[installation guide](docs/install-local-llm.md) for prerequisites and configuration.
+See the [installation guide](docs/install-local-llm.md) for configuration and
+details about automatic Python provisioning.
 
 Open http://localhost:8080, create your administrator account, and select
-`gemma4:12b` for chat. The service listens only on localhost by default.
+`qwen3:1.7b` for chat. The service listens only on localhost by default.
 
-To select different locally available Ollama models:
+The default `qwen3:1.7b` is intended for inexpensive CPU testing. It is useful for
+checking the installation flow; evaluate answer quality separately with your own
+documents. No GPU is required for this initial test.
+
+Preview settings without installing anything:
 
 ```bash
-MODEL=gemma4:12b EMBEDDING_MODEL=nomic-embed-text ./scripts/install-local-llm.sh
+./scripts/install-local-llm.sh --show-config
+```
+
+To select the larger chat model instead:
+
+```bash
+./scripts/install-local-llm.sh --model gemma4:12b --embedding-model nomic-embed-text
 ```
 
 The embedding model is separate from the chat model and must support embeddings.
@@ -113,6 +123,27 @@ contact external services or download additional resources. Keep cloud providers
 web search and external extraction services disabled for a local document flow.
 Fully offline operation requires separately preparing and testing all needed
 assets; this installer does not enforce network isolation.
+
+## Uninstall
+
+Remove the Open WebUI service, virtual environment, and managed Python tools while
+preserving accounts, chats, RAG data, Ollama, and downloaded models:
+
+```bash
+./scripts/uninstall-local-llm.sh
+```
+
+Permanently remove Open WebUI accounts, chats, uploaded documents, vector data,
+and its secret key as well:
+
+```bash
+./scripts/uninstall-local-llm.sh --purge-data --yes
+```
+
+For a custom installation location, pass the same `--install-dir` used during
+installation. The uninstaller requires a project marker in that directory and
+will refuse to remove a service associated with a different path. It preserves
+Ollama because it may have existed before this repository was installed.
 
 ## Git helpers
 

@@ -1,42 +1,88 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="${MODEL:-gemma4:12b}"
+MODEL="${MODEL:-qwen3:1.7b}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
 OPENWEBUI_DIR="${OPENWEBUI_DIR:-$HOME/open-webui}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-auto}"
 WEBUI_HOST="${WEBUI_HOST:-127.0.0.1}"
 WEBUI_PORT="${WEBUI_PORT:-8080}"
+SHOW_CONFIG=false
 
 usage() {
     cat <<'HELP'
-Usage: install-local-llm.sh [--help]
+Usage: install-local-llm.sh [options]
 
 Install Ollama and Open WebUI on Ubuntu/Xubuntu with systemd.
 Run as your normal user; privileged operations use sudo.
 Internet access is required for packages and model downloads.
 
-Environment variables:
-  MODEL           Ollama model (default: gemma4:12b)
-  EMBEDDING_MODEL Local RAG embedding model (default: nomic-embed-text)
-  OPENWEBUI_DIR   Absolute installation directory (default: $HOME/open-webui)
-  PYTHON_BIN      Python 3.11 or 3.12 executable (default: python3)
-  WEBUI_HOST      127.0.0.1 (default), or 0.0.0.0 for network access
-  WEBUI_PORT      HTTP port (default: 8080)
+Options (built-in defaults shown):
+  --model NAME             Chat model (qwen3:1.7b; small CPU-friendly default)
+  --embedding-model NAME   RAG embedding model (nomic-embed-text)
+  --install-dir PATH       Absolute WebUI directory ($HOME/open-webui)
+  --python EXECUTABLE      Python 3.11/3.12 executable (auto)
+  --host ADDRESS           127.0.0.1, or 0.0.0.0 for network access
+  --port NUMBER            HTTP port (8080)
+  --show-config            Print configuration and exit without installing
+  -h, --help               Show this help and exit
+
+Precedence: switches > environment variables > built-in defaults.
+Environment: MODEL, EMBEDDING_MODEL, OPENWEBUI_DIR, PYTHON_BIN,
+             WEBUI_HOST, WEBUI_PORT.
+
+Examples:
+  ./scripts/install-local-llm.sh
+  ./scripts/install-local-llm.sh --python python3.11
+  ./scripts/install-local-llm.sh --model gemma4:12b --port 8081
 
 For network access, create the administrator account locally first,
-then rerun with WEBUI_HOST=0.0.0.0.
+then rerun with --host 0.0.0.0. Repeat custom settings on reruns.
+--show-config validates options only; it does not check system prerequisites.
 HELP
 }
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-if [[ $# -gt 0 ]]; then
-    [[ $# -eq 1 ]] || die 'Unexpected arguments; see --help'
+while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
+        --show-config) SHOW_CONFIG=true; shift ;;
+        --model|--embedding-model|--install-dir|--python|--host|--port)
+            [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "$1 requires a value"
+            case "$1" in
+                --model) MODEL="$2" ;;
+                --embedding-model) EMBEDDING_MODEL="$2" ;;
+                --install-dir) OPENWEBUI_DIR="$2" ;;
+                --python) PYTHON_BIN="$2" ;;
+                --host) WEBUI_HOST="$2" ;;
+                --port) WEBUI_PORT="$2" ;;
+            esac
+            shift 2
+            ;;
         *) die "Unknown argument: $1; see --help" ;;
     esac
+done
+
+[[ "$OPENWEBUI_DIR" == /* && "$OPENWEBUI_DIR" != / ]] || die 'OPENWEBUI_DIR must be an absolute directory other than /.'
+# Keep paths safe for direct use in systemd unit directives.
+[[ "$OPENWEBUI_DIR" =~ ^/[a-zA-Z0-9_./-]+$ ]] || die 'OPENWEBUI_DIR contains unsupported characters.'
+case "$WEBUI_HOST" in
+    127.0.0.1|0.0.0.0) ;;
+    *) die 'WEBUI_HOST must be 127.0.0.1 or 0.0.0.0.' ;;
+esac
+[[ "$WEBUI_PORT" =~ ^[0-9]{1,5}$ ]] || die 'WEBUI_PORT must be an integer from 1 to 65535.'
+WEBUI_PORT=$((10#$WEBUI_PORT))
+(( WEBUI_PORT >= 1 && WEBUI_PORT <= 65535 )) || die 'WEBUI_PORT must be from 1 to 65535.'
+[[ "$MODEL" =~ ^[a-zA-Z0-9][a-zA-Z0-9_./:-]*$ ]] || die 'MODEL contains unsupported characters.'
+[[ "$EMBEDDING_MODEL" =~ ^[a-zA-Z0-9][a-zA-Z0-9_./:-]*$ ]] ||
+    die 'EMBEDDING_MODEL contains unsupported characters.'
+
+if "$SHOW_CONFIG"; then
+    printf '%s\n' "MODEL=$MODEL" "EMBEDDING_MODEL=$EMBEDDING_MODEL" \
+        "OPENWEBUI_DIR=$OPENWEBUI_DIR" "PYTHON_BIN=$PYTHON_BIN" \
+        "WEBUI_HOST=$WEBUI_HOST" "WEBUI_PORT=$WEBUI_PORT"
+    exit 0
 fi
 
 # Validate before changing packages or services.
@@ -51,23 +97,14 @@ case "${VERSION_ID:-}" in
 esac
 [[ -d /run/systemd/system ]] || die 'A running systemd system is required.'
 command -v sudo >/dev/null || die 'sudo is required.'
-command -v "$PYTHON_BIN" >/dev/null || die "Python executable not found: $PYTHON_BIN"
-PYTHON_BIN="$(command -v "$PYTHON_BIN")"
-"$PYTHON_BIN" -c 'import sys; sys.exit(sys.version_info[:2] not in ((3, 11), (3, 12)))' ||
-    die 'Select an installed Python 3.11 or 3.12 using PYTHON_BIN.'
-"$PYTHON_BIN" -c 'import venv, ensurepip' ||
-    die 'Install the venv support package for the selected Python first.'
-[[ "$OPENWEBUI_DIR" == /* && "$OPENWEBUI_DIR" != / ]] || die 'OPENWEBUI_DIR must be an absolute directory other than /.'
-# Keep paths safe for direct use in systemd unit directives.
-[[ "$OPENWEBUI_DIR" =~ ^/[a-zA-Z0-9_./-]+$ ]] || die 'OPENWEBUI_DIR contains unsupported characters.'
-case "$WEBUI_HOST" in
-    127.0.0.1|0.0.0.0) ;;
-    *) die 'WEBUI_HOST must be 127.0.0.1 or 0.0.0.0.' ;;
-esac
-[[ "$WEBUI_PORT" =~ ^[0-9]{1,5}$ ]] || die 'WEBUI_PORT must be an integer from 1 to 65535.'
-WEBUI_PORT=$((10#$WEBUI_PORT))
-(( WEBUI_PORT >= 1 && WEBUI_PORT <= 65535 )) || die 'WEBUI_PORT must be from 1 to 65535.'
-[[ -n "$MODEL" && "$MODEL" != -* ]] || die 'MODEL must be a model name.'
+if [[ "$PYTHON_BIN" != auto ]]; then
+    command -v "$PYTHON_BIN" >/dev/null || die "Python executable not found: $PYTHON_BIN"
+    PYTHON_BIN="$(command -v "$PYTHON_BIN")"
+    "$PYTHON_BIN" -c 'import sys; sys.exit(sys.version_info[:2] not in ((3, 11), (3, 12)))' ||
+        die 'The selected Python must be version 3.11 or 3.12.'
+    "$PYTHON_BIN" -c 'import venv, ensurepip' ||
+        die 'Install venv support for the selected Python first.'
+fi
 
 wait_for_http() {
     local service="$1" url="$2" attempts="$3"
@@ -81,9 +118,6 @@ wait_for_http() {
     sudo journalctl -u "$service" -n 30 --no-pager >&2 || true
     die "$service did not become ready at $url"
 }
-
-[[ "$EMBEDDING_MODEL" =~ ^[a-zA-Z0-9][a-zA-Z0-9_./:-]*$ ]] ||
-    die 'EMBEDDING_MODEL contains unsupported characters.'
 
 sudo -v
 printf '[1/6] Installing dependencies...\n'
@@ -106,11 +140,33 @@ printf '[3/6] Installing Open WebUI...\n'
 mkdir -p "$OPENWEBUI_DIR"
 OPENWEBUI_DIR="$(cd -- "$OPENWEBUI_DIR" && pwd -P)"
 [[ "$OPENWEBUI_DIR" =~ ^/[a-zA-Z0-9_./-]+$ ]] || die 'Resolved installation path contains unsupported characters.'
+printf 'managed_by=local-llm-stack\n' > "$OPENWEBUI_DIR/.local-llm-stack"
 if [[ -d "$OPENWEBUI_DIR/venv" ]]; then
     "$OPENWEBUI_DIR/venv/bin/python" -c 'import sys; sys.exit(sys.version_info[:2] not in ((3, 11), (3, 12)))' ||
         die 'Existing virtual environment has an unsupported Python version; use a new OPENWEBUI_DIR.'
 else
-    "$PYTHON_BIN" -m venv "$OPENWEBUI_DIR/venv"
+    if [[ "$PYTHON_BIN" == auto ]] &&
+        python3 -c 'import sys, venv, ensurepip; sys.exit(sys.version_info[:2] not in ((3, 11), (3, 12)))' 2>/dev/null; then
+        PYTHON_BIN="$(command -v python3)"
+        "$PYTHON_BIN" -m venv "$OPENWEBUI_DIR/venv"
+    elif [[ "$PYTHON_BIN" == auto ]]; then
+        UV_DIR="$OPENWEBUI_DIR/tools/uv"
+        UV_BIN="$UV_DIR/uv"
+        if [[ ! -x "$UV_BIN" ]]; then
+            printf 'Installing uv to provision a local Python 3.11...\n'
+            mkdir -p "$UV_DIR"
+            uv_installer="$(mktemp)"
+            trap 'rm -f -- "$uv_installer"' EXIT
+            curl --fail --show-error --silent --location \
+                https://astral.sh/uv/install.sh -o "$uv_installer"
+            env UV_INSTALL_DIR="$UV_DIR" UV_NO_MODIFY_PATH=1 sh "$uv_installer"
+            rm -f -- "$uv_installer"
+            trap - EXIT
+        fi
+        "$UV_BIN" venv --python 3.11 "$OPENWEBUI_DIR/venv"
+    else
+        "$PYTHON_BIN" -m venv "$OPENWEBUI_DIR/venv"
+    fi
 fi
 "$OPENWEBUI_DIR/venv/bin/python" -m pip install open-webui
 mkdir -p "$OPENWEBUI_DIR/data"
